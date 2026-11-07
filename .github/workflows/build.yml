@@ -1,0 +1,101 @@
+name: build
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: NDK
+        run: |
+          curl -sLo ndk.zip https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip -q ndk.zip
+          echo "NDK=$PWD/android-ndk-r26d" >> $GITHUB_ENV
+      - name: module
+        run: |
+          mkdir -p m/bloodstrike_aim/src m/bloodstrike_aim/bin m/bloodstrike_aim/config
+          cp src/bsaim.c m/bloodstrike_aim/src/
+          cd m/bloodstrike_aim
+          cat > module.prop <<'EOF'
+id=bloodstrike_aim
+name=BloodStrike Aim Assist
+version=v2.0
+versionCode=2
+author=venice
+description=Asistencia magnetica por captura de pantalla e inyeccion uinput. Paquete com.netease.newspike. Vol- activa, Vol+ calibra.
+EOF
+          cat > customize.sh <<'EOF'
+#!/system/bin/sh
+SKIPUNZIP=0
+[ "$ARCH" != "arm64" ] && abort "! Solo arm64"
+ui_print "- BloodStrike Aim Assist v2"
+set_perm_recursive "$MODPATH" 0 0 0755 0644
+set_perm "$MODPATH/bin/bsaim-arm64" 0 0 0755
+set_perm "$MODPATH/service.sh" 0 0 0755
+set_perm "$MODPATH/post-fs-data.sh" 0 0 0755
+mkdir -p /data/adb/bloodstrike_aim
+ui_print "- Config: /data/adb/modules/bloodstrike_aim/config/bsaim.conf"
+ui_print "- Reinicia y abre el juego. Vol- activa. Vol+ calibra color."
+EOF
+          cat > post-fs-data.sh <<'EOF'
+#!/system/bin/sh
+MODDIR=${0%/*}
+chmod 0666 /dev/uinput 2>/dev/null
+mkdir -p /data/adb/bloodstrike_aim
+[ -f /data/adb/bloodstrike_aim/bsaim.conf ] || cp "$MODDIR/config/bsaim.conf" /data/adb/bloodstrike_aim/bsaim.conf
+EOF
+          cat > service.sh <<'EOF'
+#!/system/bin/sh
+MODDIR=${0%/*}
+until [ "$(getprop sys.boot_completed)" = "1" ]; do sleep 2; done
+sleep 6
+CONF=/data/adb/bloodstrike_aim/bsaim.conf
+[ -f "$CONF" ] || CONF="$MODDIR/config/bsaim.conf"
+exec "$MODDIR/bin/bsaim-arm64" -c "$CONF" -l /data/adb/bloodstrike_aim/bsaim.log
+EOF
+          cat > uninstall.sh <<'EOF'
+#!/system/bin/sh
+pkill -f bsaim-arm64
+EOF
+          cat > sepolicy.rule <<'EOF'
+allow su uhid_device chr_file { open read write ioctl }
+allow su input_device dir { open read search getattr }
+allow su input_device chr_file { open read write ioctl getattr }
+EOF
+          cat > config/bsaim.conf <<'EOF'
+preset=red
+rmin=0
+gmax=0
+bmax=0
+rg=0
+rb=0
+acquire_r=150
+track_r=300
+fov_limit=380
+min_px=45
+max_px=12000
+lock_frames=2
+lost_ms=450
+stride=2
+smooth=62
+gain=120
+predict=60
+deadzone=2
+max_step=170
+hz=18
+EOF
+      - name: compile
+        run: |
+          cd m/bloodstrike_aim
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android30-clang" -static -O2 -s -o bin/bsaim-arm64 src/bsaim.c
+          file bin/bsaim-arm64
+          zip -qr "$GITHUB_WORKSPACE/bloodstrike_aim.zip" .
+      - name: publish
+        run: |
+          git config user.name builder
+          git config user.email builder@local
+          git add bloodstrike_aim.zip
+          git commit -m "build"
+          git push
